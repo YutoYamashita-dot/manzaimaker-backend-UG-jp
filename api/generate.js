@@ -6,7 +6,7 @@
 
 export const config = { runtime: "nodejs" };
 
-import { VertexAI } from "@google-cloud/vertexai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createClient } from "@supabase/supabase-js";
 
 /* =========================
@@ -446,50 +446,32 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
 }
 
 /* =========================
-6) Vertex AI (Gemini) 呼び出し（xAI 互換インターフェース）
+6) Gemini API 呼び出し（xAI 互換インターフェース）
 ========================= */
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const GCP_PROJECT_ID =
-  process.env.GCP_PROJECT_ID ||
-  process.env.GCLOUD_PROJECT ||
-  process.env.GCP_PROJECT;
-
-const GCP_LOCATION = process.env.GCP_LOCATION || "asia-northeast1";
-
-let vertexAI = null;
-if (GCP_PROJECT_ID) {
+let genAI = null;
+if (GEMINI_API_KEY) {
   try {
-    const baseConfig = {
-      project: GCP_PROJECT_ID,
-      location: GCP_LOCATION,
-    };
-    const hasSaCreds = process.env.GCP_CLIENT_EMAIL && process.env.GCP_PRIVATE_KEY;
-    const options = hasSaCreds
-      ? {
-          ...baseConfig,
-          credentials: {
-            client_email: process.env.GCP_CLIENT_EMAIL,
-            private_key: process.env.GCP_PRIVATE_KEY.replace(/\\n/g, "\n"),
-          },
-        }
-      : baseConfig;
-    vertexAI = new VertexAI(options);
+    genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
   } catch (e) {
-    console.warn("[VertexAI] init failed:", e?.message || e);
+    console.warn("[Gemini] init failed:", e?.message || e);
   }
+} else {
+  console.warn("[Gemini] GEMINI_API_KEY is not set");
 }
 
 async function createChatCompletionWithGemini({ model, messages, temperature, max_tokens, max_output_tokens }) {
-  if (!vertexAI) {
-    const err = new Error("Vertex AI is not configured");
+  if (!genAI) {
+    const err = new Error("Gemini API is not configured");
     err.status = 500;
     throw err;
   }
 
   const modelName = model || GEMINI_MODEL;
-  const generativeModel = vertexAI.getGenerativeModel({ model: modelName });
+  const generativeModel = genAI.getGenerativeModel({ model: modelName });
 
   const sysText = messages
     .filter((m) => m.role === "system")
@@ -616,6 +598,7 @@ async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [
 
   return revised;
 }
+
 
 /* =========================
 7) HTTP ハンドラ（後払い消費＋安定出力のための緩和）
