@@ -6,7 +6,7 @@
 
 export const config = { runtime: "nodejs" };
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { VertexAI } from "@google-cloud/vertexai";
 import { createClient } from "@supabase/supabase-js";
 
 /* =========================
@@ -446,22 +446,50 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
 }
 
 /* =========================
-6) Gemini 呼び出し（xAI 互換インターフェース）
+6) Vertex AI (Gemini) 呼び出し（xAI 互換インターフェース）
 ========================= */
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const GCP_PROJECT_ID =
+  process.env.GCP_PROJECT_ID ||
+  process.env.GCLOUD_PROJECT ||
+  process.env.GCP_PROJECT;
+
+const GCP_LOCATION = process.env.GCP_LOCATION || "asia-northeast1";
+
+let vertexAI = null;
+if (GCP_PROJECT_ID) {
+  try {
+    const baseConfig = {
+      project: GCP_PROJECT_ID,
+      location: GCP_LOCATION,
+    };
+    const hasSaCreds = process.env.GCP_CLIENT_EMAIL && process.env.GCP_PRIVATE_KEY;
+    const options = hasSaCreds
+      ? {
+          ...baseConfig,
+          credentials: {
+            client_email: process.env.GCP_CLIENT_EMAIL,
+            private_key: process.env.GCP_PRIVATE_KEY.replace(/\\n/g, "\n"),
+          },
+        }
+      : baseConfig;
+    vertexAI = new VertexAI(options);
+  } catch (e) {
+    console.warn("[VertexAI] init failed:", e?.message || e);
+  }
+}
 
 async function createChatCompletionWithGemini({ model, messages, temperature, max_tokens, max_output_tokens }) {
-  if (!genAI) {
-    const err = new Error("GEMINI_API_KEY is not set");
+  if (!vertexAI) {
+    const err = new Error("Vertex AI is not configured");
     err.status = 500;
     throw err;
   }
 
   const modelName = model || GEMINI_MODEL;
-  const generativeModel = genAI.getGenerativeModel({ model: modelName });
+  const generativeModel = vertexAI.getGenerativeModel({ model: modelName });
 
   const sysText = messages
     .filter((m) => m.role === "system")
@@ -496,7 +524,10 @@ async function createChatCompletionWithGemini({ model, messages, temperature, ma
     },
   });
 
-  const text = typeof result?.response?.text === "function" ? result.response.text() : (result?.response?.candidates?.[0]?.content?.parts?.[0]?.text || "");
+  const text =
+    typeof result?.response?.text === "function"
+      ? result.response.text()
+      : (result?.response?.candidates?.[0]?.content?.parts?.[0]?.text || "");
 
   // OpenAI 互換の戻り値形式に変換
   return {
