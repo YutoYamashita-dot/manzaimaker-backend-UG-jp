@@ -6,9 +6,9 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// フロント仕様：credit_100 のみ許可（100円=100クレジット）
-const ALLOWED_PRODUCT_ID = "credit_100";
-const CREDIT_100_AMOUNT = 100;
+// フロント仕様：credit_20 のみ許可（100円=20クレジット）
+const ALLOWED_PRODUCT_ID = "credit_20";
+const CREDIT_100_AMOUNT = 20;
 
 export default async function handler(req, res) {
   try {
@@ -21,7 +21,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "bad params: user_id required" });
     }
 
-    // 任意deltaは受け付けない。credit_100 のみ +100 を許可
+    // 任意deltaは受け付けない。credit_20 のみ +20 を許可
     if (product_id !== ALLOWED_PRODUCT_ID) {
       return res.status(400).json({ error: "unsupported product_id" });
     }

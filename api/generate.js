@@ -1,12 +1,12 @@
 // api/generate.js
 // Vercel Node.js (ESM)。本文と「タイトル」を日本語で返す（台本のみ）
-// 必須: XAI_API_KEY
-// 任意: XAI_MODEL
+// 必須: GEMINI_API_KEY
+// 任意: GEMINI_MODEL
 // 追加: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY（ある場合、user_id の回数/クレジットを保存）
 
 export const config = { runtime: "nodejs" };
 
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createClient } from "@supabase/supabase-js";
 
 /* =========================
@@ -44,7 +44,7 @@ async function incrementUsage(user_id, delta = 1) {
 }
 
 /* === ★ 課金ユーティリティ（後払い消費：失敗時は絶対に減らさない） === */
-const FREE_QUOTA = 500;
+const FREE_QUOTA = 10;
 
 async function getUsageRow(user_id) {
   if (!hasSupabase || !user_id) return { output_count: 0, paid_credits: 0 };
@@ -92,9 +92,9 @@ async function consumeAfterSuccess(user_id) {
   return { consumed: null };
 }
 
-/* === ★ 追加：購入反映ユーティリティ（credit_100 のみ 100 回付与） === */
-const ALLOWED_PRODUCT_ID = "credit_100";
-const CREDIT_100_AMOUNT = 100;
+/* === ★ 追加：購入反映ユーティリティ（credit_20 のみ 20 回付与） === */
+const ALLOWED_PRODUCT_ID = "credit_20";
+const CREDIT_100_AMOUNT = 20;
 
 async function addCreditsForPurchase(user_id, product_id) {
   if (!hasSupabase || !user_id) throw new Error("Supabase not configured or user_id missing");
@@ -446,12 +446,75 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
 }
 
 /* =========================
-6) Grok (xAI) 呼び出し
+6) Gemini 呼び出し（xAI 互換インターフェース）
 ========================= */
-const client = new OpenAI({
-  apiKey: process.env.XAI_API_KEY,
-  baseURL: "https://api.x.ai/v1",
-});
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+
+const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+
+async function createChatCompletionWithGemini({ model, messages, temperature, max_tokens, max_output_tokens }) {
+  if (!genAI) {
+    const err = new Error("GEMINI_API_KEY is not set");
+    err.status = 500;
+    throw err;
+  }
+
+  const modelName = model || GEMINI_MODEL;
+  const generativeModel = genAI.getGenerativeModel({ model: modelName });
+
+  const sysText = messages
+    .filter((m) => m.role === "system")
+    .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+    .join("\n");
+
+  const otherText = messages
+    .filter((m) => m.role !== "system")
+    .map((m) => {
+      const prefix =
+        m.role === "user" ? "ユーザー" :
+        m.role === "assistant" ? "アシスタント" :
+        m.role;
+      return `${prefix}: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`;
+    })
+    .join("\n");
+
+  const prompt = [sysText, otherText].filter(Boolean).join("\n\n");
+
+  const maxOutputTokens = max_output_tokens || max_tokens;
+
+  const result = await generativeModel.generateContent({
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: prompt }],
+      },
+    ],
+    generationConfig: {
+      temperature: temperature ?? 0.3,
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+    },
+  });
+
+  const text = typeof result?.response?.text === "function" ? result.response.text() : (result?.response?.candidates?.[0]?.content?.parts?.[0]?.text || "");
+
+  // OpenAI 互換の戻り値形式に変換
+  return {
+    choices: [
+      {
+        message: { content: text },
+      },
+    ],
+  };
+}
+
+const client = {
+  chat: {
+    completions: {
+      create: createChatCompletionWithGemini,
+    },
+  },
+};
 
 /* =========================
 失敗理由の整形
@@ -530,8 +593,8 @@ export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-    // ★ 追加：購入反映モード（credit_100 のみ 100 付与）
-    // フロント側で購入後に { action: "add_credit", product_id: "credit_100", user_id } を POST する想定。
+    // ★ 追加：購入反映モード（credit_20 のみ 20 付与）
+    // フロント側で購入後に { action: "add_credit", product_id: "credit_20", user_id } を POST する想定。
     if (req.body?.action === "add_credit") {
       try {
         const { user_id, product_id } = req.body || {};
@@ -570,14 +633,14 @@ export default async function handler(req, res) {
       },
     });
 
-    // モデル呼び出し（xAIは max_output_tokens を参照）★余裕UP
+    // モデル呼び出し（Gemini は maxOutputTokens を参照）★余裕UP
     const approxMaxTok = Math.min(8192, Math.ceil(Math.max(maxLen * 2, 3500) * 3));
     const messages = [
       { role: "system", content: "あなたは実力派の漫才師コンビです。舞台で即使える台本だけを出力してください。解説・メタ記述は禁止。" },
       { role: "user", content: prompt },
     ];
     const payload = {
-      model: process.env.XAI_MODEL || "grok-4-fast-reasoning",
+      model: GEMINI_MODEL,
       messages,
       temperature: 0.3,
       max_output_tokens: approxMaxTok,
@@ -589,14 +652,15 @@ export default async function handler(req, res) {
       completion = await client.chat.completions.create(payload);
     } catch (err) {
       const e = normalizeError(err);
-      console.error("[xAI error]", e);
+      console.error("[Gemini error]", e);
       // 後払い方式：ここでは消費しない
-      return res.status(e.status || 500).json({ error: "xAI request failed", detail: e });
+      return res.status(e.status || 500).json({ error: "Gemini request failed", detail: e });
     }
 
     // 整形（★順序を安定化：normalize → 空行 → 落ち付与）
     let raw = completion?.choices?.[0]?.message?.content?.trim() || "";
     let split = splitTitleAndBody(raw);
+   
     // ★ タイトルは必ず1つ：本文先頭の重複タイトルを除去、必要なら抽出
     const dedup = ensureSingleTitle(split.title, split.body);
     let title = dedup.title;
@@ -613,7 +677,7 @@ export default async function handler(req, res) {
       try {
         body = await generateContinuation({
           client,
-          model: process.env.XAI_MODEL || "grok-4-fast-reasoning",
+          model: GEMINI_MODEL,
           baseBody: body,
           remainingChars: deficit,
           tsukkomiName,
@@ -628,13 +692,11 @@ export default async function handler(req, res) {
     }
 
     // ★ 自己検証＆自動修正（採用する技法の担保）
-    // techniquesForMeta = Boke/Tsukkomi のラベル。構成系は structureMeta に入っているが、
-    // 厳密には「採用する技法」を担保したいので、ここでは techniquesForMeta を主対象にする。
     const requiredForCheck = Array.isArray(techniquesForMeta) ? techniquesForMeta : [];
     try {
       body = await selfVerifyAndCorrectBody({
         client,
-        model: process.env.XAI_MODEL || "grok-4-fast-reasoning",
+        model: GEMINI_MODEL,
         body,
         requiredTechs: requiredForCheck,
         minLen,
