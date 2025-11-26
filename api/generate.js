@@ -449,7 +449,7 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
 6) Gemini API 呼び出し（xAI 互換インターフェース）
 ========================= */
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.0-flash";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 let genAI = null;
