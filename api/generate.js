@@ -1,12 +1,12 @@
 // api/generate.js
 // Vercel Node.js (ESM)。本文と「タイトル」を日本語で返す（台本のみ）
-// 必須: GEMINI_API_KEY
-// 任意: GEMINI_MODEL
+// 必須: GCP_PROJECT_ID（＋認証: サービスアカウント or gcloud ADC）
+// 任意: GEMINI_MODEL（未指定なら gemini-3.0-flash）
 // 追加: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY（ある場合、user_id の回数/クレジットを保存）
 
 export const config = { runtime: "nodejs" };
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { VertexAI } from "@google-cloud/vertexai";
 import { createClient } from "@supabase/supabase-js";
 
 /* =========================
@@ -446,32 +446,50 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
 }
 
 /* =========================
-6) Gemini API 呼び出し（xAI 互換インターフェース）
+6) Vertex AI (Gemini) 呼び出し（xAI 互換インターフェース）
 ========================= */
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.0-flash";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-let genAI = null;
-if (GEMINI_API_KEY) {
+const GCP_PROJECT_ID =
+  process.env.GCP_PROJECT_ID ||
+  process.env.GCLOUD_PROJECT ||
+  process.env.GCP_PROJECT;
+
+const GCP_LOCATION = process.env.GCP_LOCATION || "asia-northeast1";
+
+let vertexAI = null;
+if (GCP_PROJECT_ID) {
   try {
-    genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    const baseConfig = {
+      project: GCP_PROJECT_ID,
+      location: GCP_LOCATION,
+    };
+    const hasSaCreds = process.env.GCP_CLIENT_EMAIL && process.env.GCP_PRIVATE_KEY;
+    const options = hasSaCreds
+      ? {
+          ...baseConfig,
+          credentials: {
+            client_email: process.env.GCP_CLIENT_EMAIL,
+            private_key: process.env.GCP_PRIVATE_KEY.replace(/\\n/g, "\n"),
+          },
+        }
+      : baseConfig;
+    vertexAI = new VertexAI(options);
   } catch (e) {
-    console.warn("[Gemini] init failed:", e?.message || e);
+    console.warn("[VertexAI] init failed:", e?.message || e);
   }
-} else {
-  console.warn("[Gemini] GEMINI_API_KEY is not set");
 }
 
 async function createChatCompletionWithGemini({ model, messages, temperature, max_tokens, max_output_tokens }) {
-  if (!genAI) {
-    const err = new Error("Gemini API is not configured");
+  if (!vertexAI) {
+    const err = new Error("Vertex AI is not configured");
     err.status = 500;
     throw err;
   }
 
   const modelName = model || GEMINI_MODEL;
-  const generativeModel = genAI.getGenerativeModel({ model: modelName });
+  const generativeModel = vertexAI.getGenerativeModel({ model: modelName });
 
   const sysText = messages
     .filter((m) => m.role === "system")
@@ -647,7 +665,7 @@ export default async function handler(req, res) {
       },
     });
 
-    // モデル呼び出し（Gemini は maxOutputTokens を参照）★余裕UP
+    // モデル呼び出し（Vertex Gemini は maxOutputTokens を参照）★余裕UP
     const approxMaxTok = Math.min(8192, Math.ceil(Math.max(maxLen * 2, 3500) * 3));
     const messages = [
       { role: "system", content: "あなたは実力派の漫才師コンビです。舞台で即使える台本だけを出力してください。解説・メタ記述は禁止。" },
