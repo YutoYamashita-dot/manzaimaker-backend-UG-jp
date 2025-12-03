@@ -1,12 +1,12 @@
 // api/generate.js
 // Vercel Node.js (ESM)。本文と「タイトル」を日本語で返す（台本のみ）
-// 必須: GEMINI_API_KEY
-// 任意: GEMINI_MODEL
+// 必須: XAI_API_KEY / DEEPSEEK_API_KEY
+// 任意: XAI_MODEL / DEEPSEEK_MODEL
 // 追加: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY（ある場合、user_id の回数/クレジットを保存）
 
 export const config = { runtime: "nodejs" };
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
 /* =========================
@@ -74,27 +74,39 @@ async function checkCredit(user_id) {
   return { ok: used < FREE_QUOTA || paid > 0, row };
 }
 
-/** 生成成功後：ここで初めて消費（無料→有料の順） */
+/** 生成成功後：ここで初めて消費（無料→有料の順）
+ *  エラーが起きても絶対に throw せず、クレジット減少が原因でレスポンスが失敗しないようにする
+ */
 async function consumeAfterSuccess(user_id) {
   if (!hasSupabase || !user_id) return { consumed: null };
-  const row = await getUsageRow(user_id);
-  const used = row.output_count ?? 0;
-  const paid = row.paid_credits ?? 0;
+  try {
+    const row = await getUsageRow(user_id);
+    const used = row.output_count ?? 0;
+    const paid = row.paid_credits ?? 0;
 
-  if (used < FREE_QUOTA) {
-    await setUsageRow(user_id, { output_count: used + 1, paid_credits: paid });
-    return { consumed: "free" };
+    if (used < FREE_QUOTA) {
+      await setUsageRow(user_id, { output_count: used + 1, paid_credits: paid });
+      return { consumed: "free" };
+    }
+    if (paid > 0) {
+      await setUsageRow(user_id, { output_count: used + 1, paid_credits: paid - 1 });
+      return { consumed: "paid" };
+    }
+    return { consumed: null };
+  } catch (e) {
+    // ここでエラーになっても「生成自体は成功している」のに 500 を返さないようにする。
+    // また、この catch の中では setUsageRow が失敗した場合もそれ以上クレジットを減らさない。
+    console.warn(
+      "[supabase] consumeAfterSuccess failed, credits NOT decremented:",
+      e?.message || e
+    );
+    return { consumed: null, error: e?.message || String(e) };
   }
-  if (paid > 0) {
-    await setUsageRow(user_id, { output_count: used + 1, paid_credits: paid - 1 });
-    return { consumed: "paid" };
-  }
-  return { consumed: null };
 }
 
-/* === ★ 追加：購入反映ユーティリティ（credit_20 のみ 20 回付与） === */
-const ALLOWED_PRODUCT_ID = "credit_20";
-const CREDIT_100_AMOUNT = 20;
+/* === ★ 追加：購入反映ユーティリティ（credit_100 のみ 100 回付与） === */
+const ALLOWED_PRODUCT_ID = "credit_100";
+const CREDIT_100_AMOUNT = 100;
 
 async function addCreditsForPurchase(user_id, product_id) {
   if (!hasSupabase || !user_id) throw new Error("Supabase not configured or user_id missing");
@@ -358,6 +370,7 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     "- 出力前に **自己チェック** を行い、未使用の技法がある場合は **本文を追記** して満たしてから出力を終えること。",
     "- 技法名や“この技法を使う”といったメタ表現は本文に **絶対に書かない**。",
     "- 自己検証時は《TAG:要素名》の**一時タグ法**を内部で用いてよいが、**最終出力では必ず全削除**しタグを残さないこと。",
+    "- ここで列挙される技法は、フロント画面でユーザーが選択した「選択された技法」である。これらを一つ残らず、ボケ・ツッコミの具体的な掛け合いの中で必ず使うこと。",
     guideline || "",
     "",
     "■分量・形式の厳守",
@@ -369,18 +382,32 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     "- 「比喩」「皮肉」「風刺」と直接本文に書かない。",
     "- 「緊張感のある状態」とそれが「緩和」する状態を必ず作る。",
     "- 「採用する技法」をしっかり使う。",
+    "- 選んだ「題材」についてしっかり話題にする。",
+    "- 「出力するネタ」が最新の情報に基づいているかインターネットを検索し参照する。",
+    "",
+    "■自己改稿プロセス（60点→100点）",
+    "- まず頭の中で、与えられた条件をもとに「だいたい60点くらい」の漫才台本を1本作る（※この60点版は出力しない）。",
+    "- 次に、その60点の台本を観客目線で自己採点し、「どこを直せばもっと笑えるか」「どの技法が弱いか」を具体的に見直す。",
+    "- フロントで選択された技法（採用する技法）が、ボケ・ツッコミの掛け合いの中で十分に活かされているかを確認する。",
+    "- 最後に、弱い部分を修正・強化し、『100点を目指した完成版』に書き直したものだけを最終出力として返す（途中の60点版や解説は絶対に出力しない）。",
+    "",
     "■見出し・書式",
     "- 最初の1行に【タイトル】を入れ、その直後に本文（漫才）を続ける",
     "- タイトルと本文の間には必ず空行を1つ入れる",
     "■その他",
     "- 人間にとって「意外性」があるが「納得感」のある表現を使う。",
+    "- 現実的なことをネタにする。現実から飛躍したことを言わない。",
     "- 登場人物の個性を反映する。",
     "- 観客がしっかり笑える表現にする。",
+    "- ボケやツッコミには、少しヒヤヒヤする要素や意外性があっても、暴力・差別・性的な危険さには踏み込まず、最終的に安心感や納得感のあるオチになるようにする。",
+    "- フロントで選択された技法が、ボケとツッコミの自然な掛け合いの中で伝わるように使われているかを常に意識する。",
     "",
     // ▼▼▼ 最終チェックリスト ▼▼▼
     `■最終出力前に必ずこのチェックリストを頭の中で確認：`,
     `- すべての「採用する技法」を1回以上使ったか？`,
+    `- フロントで選択された技法（採用する技法）が、ボケとツッコミの掛け合いの中で具体的な台詞・展開として使われているか？`,
     `- 「意外性」があるが「納得感」のある笑える表現を使っているか？`,
+    `- ボケやツッコミの表現は、多少ヒヤヒヤしても危険ではなく、最終的に安心感や納得感につながっているか？`,
     `- フリ（導入）→ 伏線回収 → 最後は明確な「オチ」という全体の構成になっているか？`,
     `- 途中で展開破壊はあれど、全体として「一貫した話の漫才」となっているか？`,
     `- 表現により「緊張感」がある状態とそれが「緩和」する状態があるか？`,
@@ -388,6 +415,7 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     `- 各台詞は「名前: セリフ」形式か？`,
     `- 最後は ${tsukkomiName}: もういいよ！ か？`,
     `- タイトルと本文の間に空行があるか？`,
+    `- 現実的なネタにしているか？`,
     `→ 1つでもNoなら、即座に修正してから出力。`,
   ].join("\n");
 
@@ -409,6 +437,7 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
     "",
     // ▼▼▼ 最終チェックリスト（続き生成にも適用） ▼▼▼
     "■最終出力前に必ずこのチェックリストを頭の中で確認：",
+    "- 選んだ「題材」についてしっかり話題にしているか？",
     "- すべての「採用する技法」を1回以上使ったか？",
     "- 「意外性」があるが「納得感」のある笑える表現を使っているか？",
     "- フリ（導入）→ 伏線回収 → 最後は明確な「オチ」という全体の構成になっているか？",
@@ -416,8 +445,9 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
     "- 表現により「緊張感」がある状態とそれが「緩和」する状態があるか？",
     "- 文字数は \\${minLen}〜\\${maxLen} か？",
     "− 各台詞は「名前: セリフ」形式か？",
-    `- 最後は ${tsukkomiName}: もういいよ！ か？`,
+    "- 最後は ${tsukkomiName}: もういいよ！ か？",
     "- タイトルと本文の間に空行があるか？",
+    "- 現実的なネタにしているか？",
     "→ 1つでもNoなら、即座に修正してから出力。",
     "",
     "【これまでの本文】",
@@ -433,7 +463,7 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
   const resp = await client.chat.completions.create({
     model,
     messages,
-    temperature: 0.3,
+    temperature: 0.2,
     max_output_tokens: approxTok,
     max_tokens: approxTok,
   });
@@ -446,88 +476,16 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
 }
 
 /* =========================
-6) Gemini API 呼び出し（xAI 互換インターフェース）
+6) DeepSeek 呼び出し
 ========================= */
+const client = new OpenAI({
+  apiKey: process.env.DEEPSEEK_API_KEY || process.env.XAI_API_KEY,
+  baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
+});
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-pro-preview";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-
-let genAI = null;
-if (GEMINI_API_KEY) {
-  try {
-    genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-  } catch (e) {
-    console.warn("[Gemini] init failed:", e?.message || e);
-  }
-} else {
-  console.warn("[Gemini] GEMINI_API_KEY is not set");
-}
-
-async function createChatCompletionWithGemini({ model, messages, temperature, max_tokens, max_output_tokens }) {
-  if (!genAI) {
-    const err = new Error("Gemini API is not configured");
-    err.status = 500;
-    throw err;
-  }
-
-  const modelName = model || GEMINI_MODEL;
-  const generativeModel = genAI.getGenerativeModel({ model: modelName });
-
-  const sysText = messages
-    .filter((m) => m.role === "system")
-    .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
-    .join("\n");
-
-  const otherText = messages
-    .filter((m) => m.role !== "system")
-    .map((m) => {
-      const prefix =
-        m.role === "user" ? "ユーザー" :
-        m.role === "assistant" ? "アシスタント" :
-        m.role;
-      return `${prefix}: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`;
-    })
-    .join("\n");
-
-  const prompt = [sysText, otherText].filter(Boolean).join("\n\n");
-
-  const maxOutputTokens = max_output_tokens || max_tokens;
-
-  const result = await generativeModel.generateContent({
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: prompt }],
-      },
-    ],
-    generationConfig: {
-      temperature: temperature ?? 0.3,
-      ...(maxOutputTokens ? { maxOutputTokens } : {}),
-    },
-  });
-
-  const text =
-    typeof result?.response?.text === "function"
-      ? result.response.text()
-      : (result?.response?.candidates?.[0]?.content?.parts?.[0]?.text || "");
-
-  // OpenAI 互換の戻り値形式に変換
-  return {
-    choices: [
-      {
-        message: { content: text },
-      },
-    ],
-  };
-}
-
-const client = {
-  chat: {
-    completions: {
-      create: createChatCompletionWithGemini,
-    },
-  },
-};
+// デフォルトモデル（環境変数があればそれを優先）
+const DEFAULT_MODEL =
+  process.env.XAI_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-chat";
 
 /* =========================
 失敗理由の整形
@@ -548,14 +506,18 @@ function normalizeError(err) {
 async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [], minLen, maxLen, tsukkomiName }) {
   const checklist = [
     "■最終出力前に必ずこのチェックリストを頭の中で確認：",
+    "- 選んだ「題材」についてしっかり話題にしているか？",
     `- すべての「採用する技法」を1回以上使ったか？（採用する技法: ${requiredTechs.join("、") || "（指定なし）"}）`,
+    `- フロントで選択された技法（採用する技法）が、ボケとツッコミの掛け合いの中で具体的な台詞・展開として使われているか？`,
     `- 「意外性」があるが「納得感」のある笑える表現を使っているか？`,
+    `- ボケやツッコミの表現は、多少ヒヤヒヤしても危険ではなく、最終的に安心感や納得感につながっているか？`,
     `- フリ（導入）→ 伏線回収 → 最後は明確な「オチ」という全体の構成になっているか？`,
     `- 途中で展開破壊はあれど、全体として「一貫した話の漫才」となっているか？`,
     `- 表現により「緊張感」がある状態とそれが「緩和」する状態があるか？`,
     `- 文字数は ${minLen}〜${maxLen} か？`,
     `- 各台詞は「名前: セリフ」形式か？`,
     `- 最後は ${tsukkomiName}: もういいよ！ か？`,
+    `- 現実的なネタにしているか？`,
     "- タイトルと本文の間に空行があるか？",
     // ★ ここから追記：禁止語句の厳格チェック
     "- 本文に『皮肉』『風刺』『緊張』『緩和』『伏線』『比喩』という語を**一切含めない**こと（英字・同義語例: irony, satire, tension, release, foreshadowing, metaphor も不可）。該当語がある場合は**別表現に必ず置換**してから出力すること。",
@@ -575,7 +537,11 @@ async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [
   ].join("\n");
 
   const messages = [
-    { role: "system", content: "あなたは厳格な編集者です。出力は本文のみ（解説・根拠・余計なテキストは禁止）。一時タグは出力に残さないこと。" },
+    {
+      role: "system",
+      content:
+        "あなたは厳格な編集者です。出力は本文のみ（解説・根拠・余計なテキストは禁止）。一時タグは出力に残さないこと。",
+    },
     { role: "user", content: verifyPrompt },
   ];
 
@@ -583,7 +549,7 @@ async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [
   const resp = await client.chat.completions.create({
     model,
     messages,
-    temperature: 0.3,
+    temperature: 0.2,
     max_output_tokens: approxTok,
     max_tokens: approxTok,
   });
@@ -599,7 +565,6 @@ async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [
   return revised;
 }
 
-
 /* =========================
 7) HTTP ハンドラ（後払い消費＋安定出力のための緩和）
 ========================= */
@@ -607,8 +572,8 @@ export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-    // ★ 追加：購入反映モード（credit_20 のみ 20 付与）
-    // フロント側で購入後に { action: "add_credit", product_id: "credit_20", user_id } を POST する想定。
+    // ★ 追加：購入反映モード（credit_100 のみ 100 付与）
+    // フロント側で購入後に { action: "add_credit", product_id: "credit_100", user_id } を POST する想定。
     if (req.body?.action === "add_credit") {
       try {
         const { user_id, product_id } = req.body || {};
@@ -635,7 +600,15 @@ export default async function handler(req, res) {
       });
     }
 
-    const { prompt, techniquesForMeta, structureMeta, maxLen, minLen, tsukkomiName, targetLen } = buildPrompt({
+    const {
+      prompt,
+      techniquesForMeta,
+      structureMeta,
+      maxLen,
+      minLen,
+      tsukkomiName,
+      targetLen,
+    } = buildPrompt({
       theme,
       genre,
       characters,
@@ -647,16 +620,20 @@ export default async function handler(req, res) {
       },
     });
 
-    // モデル呼び出し（Gemini は maxOutputTokens を参照）★余裕UP
+    // モデル呼び出し（DeepSeek は OpenAI 互換）★余裕UP
     const approxMaxTok = Math.min(8192, Math.ceil(Math.max(maxLen * 2, 3500) * 3));
     const messages = [
-      { role: "system", content: "あなたは実力派の漫才師コンビです。舞台で即使える台本だけを出力してください。解説・メタ記述は禁止。" },
+      {
+        role: "system",
+        content:
+          "あなたは実力派の漫才師コンビです。舞台で即使える台本だけを出力してください。解説・メタ記述は禁止。",
+      },
       { role: "user", content: prompt },
     ];
     const payload = {
-      model: GEMINI_MODEL,
+      model: DEFAULT_MODEL,
       messages,
-      temperature: 0.3,
+      temperature: 0.2,
       max_output_tokens: approxMaxTok,
       max_tokens: approxMaxTok,
     };
@@ -666,15 +643,14 @@ export default async function handler(req, res) {
       completion = await client.chat.completions.create(payload);
     } catch (err) {
       const e = normalizeError(err);
-      console.error("[Gemini error]", e);
+      console.error("[deepseek error]", e);
       // 後払い方式：ここでは消費しない
-      return res.status(e.status || 500).json({ error: "Gemini request failed", detail: e });
+      return res.status(e.status || 500).json({ error: "DeepSeek request failed", detail: e });
     }
 
     // 整形（★順序を安定化：normalize → 空行 → 落ち付与）
     let raw = completion?.choices?.[0]?.message?.content?.trim() || "";
     let split = splitTitleAndBody(raw);
-   
     // ★ タイトルは必ず1つ：本文先頭の重複タイトルを除去、必要なら抽出
     const dedup = ensureSingleTitle(split.title, split.body);
     let title = dedup.title;
@@ -691,7 +667,7 @@ export default async function handler(req, res) {
       try {
         body = await generateContinuation({
           client,
-          model: GEMINI_MODEL,
+          model: DEFAULT_MODEL,
           baseBody: body,
           remainingChars: deficit,
           tsukkomiName,
@@ -710,7 +686,7 @@ export default async function handler(req, res) {
     try {
       body = await selfVerifyAndCorrectBody({
         client,
-        model: GEMINI_MODEL,
+        model: DEFAULT_MODEL,
         body,
         requiredTechs: requiredForCheck,
         minLen,
@@ -732,7 +708,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Empty output" });
     }
 
-    // 成功：ここで初めて消費
+    // 成功：ここで初めて消費（consumeAfterSuccess は内部でエラーを握りつぶし、絶対に throw しない）
     await consumeAfterSuccess(user_id);
 
     // 残量取得
