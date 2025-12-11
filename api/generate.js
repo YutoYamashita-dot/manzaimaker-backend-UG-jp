@@ -711,6 +711,38 @@ async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [
 }
 
 /* =========================
+★ 5.6) 最終本文からタイトルを再生成
+========================= */
+async function generateTitleForBody({ client, model, body }) {
+  const prompt = [
+    "以下の漫才台本の内容にふさわしい、面白くてキャッチーな「タイトル」を1つだけ考えてください。",
+    "・出力はタイトルのみ（余計な挨拶や「タイトル：」などの接頭辞は不要）",
+    "・20文字以内",
+    "",
+    "【漫才台本】",
+    body
+  ].join("\n");
+
+  const messages = [
+    { role: "system", content: "あなたは優秀な放送作家です。" },
+    { role: "user", content: prompt }
+  ];
+
+  const resp = await client.chat.completions.create({
+    model,
+    messages,
+    temperature: 0.7,
+    max_output_tokens: 100,
+    max_tokens: 100,
+  });
+
+  let title = resp?.choices?.[0]?.message?.content?.trim() || "";
+  // 掃除
+  title = title.replace(/^【|】$/g, "").replace(/^タイトル[:：]\s*/, "").replace(/\"/g, "");
+  return title;
+}
+
+/* =========================
 7) HTTP ハンドラ（後払い消費＋安定出力のための緩和）
 ========================= */
 export default async function handler(req, res) {
@@ -845,6 +877,18 @@ export default async function handler(req, res) {
 
     // ★ 最終レンジ調整：上下10%の範囲に収める（allowOverflow=false）
     body = enforceCharLimit(body, minLen, maxLen, false);
+
+    // ★ タイトル再生成（本文の確定後に、内容と整合させるため）
+    if (typeof body === "string" && body.trim().length > 0) {
+        try {
+            const newTitle = await generateTitleForBody({ client, model: DEFAULT_MODEL, body });
+            if (newTitle && newTitle.length > 0) {
+                title = newTitle;
+            }
+        } catch (e) {
+            console.warn("[title-gen] failed:", e?.message || e);
+        }
+    }
 
     // 成功判定：★本文非空のみ（語尾揺れで落とさない）
     const success = typeof body === "string" && body.trim().length > 0;
