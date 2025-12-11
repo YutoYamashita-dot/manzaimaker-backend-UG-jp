@@ -479,13 +479,15 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
 6) DeepSeek 呼び出し
 ========================= */
 const client = new OpenAI({
-  apiKey: process.env.DEEPSEEK_API_KEY || process.env.XAI_API_KEY,
-  baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
+  apiKey: process.env.GEMINI_API_KEY,
+  baseURL:
+    process.env.GEMINI_BASE_URL ||
+    "https://generativelanguage.googleapis.com/v1beta/openai/",
 });
 
 // デフォルトモデル（環境変数があればそれを優先）
 const DEFAULT_MODEL =
-  process.env.XAI_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-chat";
+  process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 /* =========================
 失敗理由の整形
@@ -589,7 +591,7 @@ export default async function handler(req, res) {
 
     const { theme, genre, characters, length, boke, tsukkomi, general, user_id } = req.body || {};
 
-    // 生成前：残高チェックのみ（消費なし）
+ // 生成前：残高チェックのみ（消費なし）
     const gate = await checkCredit(user_id);
     if (!gate.ok) {
       const row = gate.row || { output_count: 0, paid_credits: 0 };
@@ -745,3 +747,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server Error", detail: e });
   }
 }
+
+
