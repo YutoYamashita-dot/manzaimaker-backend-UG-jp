@@ -188,13 +188,25 @@ function enforceCharLimit(text, minLen, maxLen, allowOverflow = false) {
 }
 
 /* =========================
-3.5) 最終行の強制付与
+3.5) 最終行の強制付与（修正：重複防止を強化）
 ========================= */
 function ensureTsukkomiOutro(text, tsukkomiName = "B") {
   const outro = `${tsukkomiName}: もういいよ！`;
   if (!text) return outro;
-  if (/もういいよ！\s*$/.test(text)) return text;
-  return text.replace(/\s*$/, "") + "\n" + outro;
+  
+  let t = text.trim();
+  
+  // 文末にすでに「もういいよ（！）」がある場合、AIが書いたものと
+  // システムが付与するものが重複しないよう、末尾の「もういいよ」系を一度完全に削除する。
+  // 正規表現：行頭or改行 + (任意の名前: ) + もういいよ + 感嘆符等 + 文末
+  const endPattern = /(?:^|\n)(?:[^:\n]+:\s*)?もういいよ[！!]*\s*$/;
+  
+  // 念のためループで削除（稀に改行を挟んで2つある場合などの対策）
+  while (endPattern.test(t)) {
+    t = t.replace(endPattern, "").trim();
+  }
+  
+  return t + "\n" + outro;
 }
 
 /* 行頭の「名前：/名前:」を「名前: 」に正規化 */
@@ -320,7 +332,7 @@ function labelizeSelected({ boke = [], tsukkomi = [], general = [] }) {
 }
 
 /* =========================
-5) プロンプト生成（±10%バンド厳守）
+5) プロンプト生成（±10%バンド厳守 → 修正：指定量を下限とする）
 ========================= */
 function buildPrompt({ theme, genre, characters, length, selected }) {
   const safeTheme = theme?.toString().trim() || "身近な題材";
@@ -332,8 +344,11 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     .slice(0, 4);
 
   const targetLen = Math.min(Number(length) || 350, 2000);
-  const minLen = Math.max(100, Math.floor(targetLen * 0.9));
-  const maxLen = Math.ceil(targetLen * 1.1);
+  
+  // ★修正: 指定文字数を「下限」にする（ユーザーは指定量以上を期待するため）
+  const minLen = targetLen;
+  const maxLen = Math.ceil(targetLen * 1.25); // 上限は少し余裕を持たせる
+  
   const minLines = Math.max(12, Math.ceil(minLen / 35));
 
   const hasNewSelection =
