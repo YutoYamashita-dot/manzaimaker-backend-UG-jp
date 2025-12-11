@@ -230,7 +230,9 @@ function ensureBlankLineBetweenTurns(text) {
 function splitTitleAndBody(s) {
   if (!s) return { title: "", body: "" };
   const parts = s.split(/\r?\n\r?\n/, 2);
-  const title = (parts[0] || "").trim().replace(/^【|】$/g, "");
+  const rawTitle = (parts[0] || "").trim();
+  // 先頭の「【」と最初の「】」を削除しておく
+  const title = rawTitle.replace(/^【/, "").replace(/】/, "");
   const body = (parts[1] ?? s).trim();
   return { title, body };
 }
@@ -239,8 +241,11 @@ function splitTitleAndBody(s) {
 function normalizeTitleString(str = "") {
   return String(str)
     .trim()
-    .replace(/^【|】$/g, "")
-    .replace(/^(タイトル|Title)\s*[:：]\s*/i, "")
+    // 先頭「【」と最初の「】」を除去
+    .replace(/^【/, "")
+    .replace(/】/, "")
+    // 「タイトル」「Title」ラベルを除去（末尾に「】」がくっついていても消す）
+    .replace(/^(タイトル|Title)\s*[:：】]?\s*/i, "")
     .replace(/^#{1,6}\s*/, "")
     .replace(/\s+/g, " ");
 }
@@ -413,7 +418,7 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     `- 表現により「緊張感」がある状態とそれが「緩和」する状態があるか？`,
     `- 文字数は ${minLen}〜${maxLen} か？`,
     `- 各台詞は「名前: セリフ」形式か？`,
-    `- 最後は ${tsukkomiName}: もういいよ！ か？`,
+    `- 最後は ${tsukkomiName}: もういいよ！ の行で終わっており、この行が本文中で1回だけになっているか？`,
     `- タイトルと本文の間に空行があるか？`,
     `- 現実的なネタにしているか？`,
     `→ 1つでもNoなら、即座に修正してから出力。`,
@@ -445,7 +450,7 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
     "- 表現により「緊張感」がある状態とそれが「緩和」する状態があるか？",
     "- 文字数は \\${minLen}〜\\${maxLen} か？",
     "− 各台詞は「名前: セリフ」形式か？",
-    "- 最後は ${tsukkomiName}: もういいよ！ か？",
+    "- 最後は ${tsukkomiName}: もういいよ！ の行で終わっており、この行が本文中で1回だけになっているか？",
     "- タイトルと本文の間に空行があるか？",
     "- 現実的なネタにしているか？",
     "→ 1つでもNoなら、即座に修正してから出力。",
@@ -599,7 +604,7 @@ async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [
     `- 表現により「緊張感」がある状態とそれが「緩和」する状態があるか？`,
     `- 文字数は ${minLen}〜${maxLen} か？`,
     `- 各台詞は「名前: セリフ」形式か？`,
-    `- 最後は ${tsukkomiName}: もういいよ！ か？`,
+    `- 最後は ${tsukkomiName}: もういいよ！ の行で終わっており、この行が本文中で1回だけになっているか？`,
     `- 現実的なネタにしているか？`,
     "- タイトルと本文の間に空行があるか？",
     // ★ ここから追記：禁止語句の厳格チェック
