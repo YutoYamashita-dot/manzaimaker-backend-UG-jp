@@ -476,18 +476,99 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
 }
 
 /* =========================
-6) DeepSeek 呼び出し
+6) DeepSeek 呼び出し → Gemini 2.5 Flash ラッパー
 ========================= */
-const client = new OpenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  baseURL:
-    process.env.GEMINI_BASE_URL ||
-    "https://generativelanguage.googleapis.com/v1beta/openai/",
-});
+
+// ★ GEMINI 用の設定
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_BASE_URL = process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta";
 
 // デフォルトモデル（環境変数があればそれを優先）
-const DEFAULT_MODEL =
-  process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+// OpenAI 互換の client.chat.completions.create をエミュレートするクライアント
+const client = {
+  chat: {
+    completions: {
+      /**
+       * @param {object} payload - { model, messages, temperature, max_output_tokens, max_tokens, ... }
+       * @returns {{choices: [{message: {role: string, content: string}}]}}
+       */
+      async create(payload) {
+        if (!GEMINI_API_KEY) {
+          const err = new Error("GEMINI_API_KEY is not set");
+          err.status = 500;
+          throw err;
+        }
+
+        const model = payload.model || DEFAULT_MODEL;
+        const messages = payload.messages || [];
+        const temperature = payload.temperature ?? 0.2;
+        const maxOut = payload.max_output_tokens ?? payload.max_tokens;
+
+        // OpenAI形式 messages → Gemini contents へ変換
+        const contents = messages.map((m) => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content }],
+        }));
+
+        const url =
+          `${GEMINI_BASE_URL}/models/` +
+          encodeURIComponent(model) +
+          `:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+
+        const body = {
+          contents,
+          generationConfig: {
+            temperature,
+            ...(maxOut ? { maxOutputTokens: maxOut } : {}),
+          },
+        };
+
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+        if (!resp.ok) {
+          let data;
+          try {
+            data = await resp.json();
+          } catch {
+            try {
+              const text = await resp.text();
+              data = text || undefined;
+            } catch {
+              data = undefined;
+            }
+          }
+          const err = new Error(`${resp.status} ${resp.statusText}`);
+          err.status = resp.status;
+          err.response = { data };
+          throw err;
+        }
+
+        const data = await resp.json();
+        const text =
+          data?.candidates?.[0]?.content?.parts
+            ?.map((p) => p.text || "")
+            .join("") || "";
+
+        return {
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: text,
+              },
+            },
+          ],
+        };
+      },
+    },
+  },
+};
 
 /* =========================
 失敗理由の整形
@@ -622,7 +703,7 @@ export default async function handler(req, res) {
       },
     });
 
-    // モデル呼び出し（DeepSeek は OpenAI 互換）★余裕UP
+    // モデル呼び出し（Gemini ラッパー）★余裕UP
     const approxMaxTok = Math.min(8192, Math.ceil(Math.max(maxLen * 2, 3500) * 3));
     const messages = [
       {
@@ -645,9 +726,9 @@ export default async function handler(req, res) {
       completion = await client.chat.completions.create(payload);
     } catch (err) {
       const e = normalizeError(err);
-      console.error("[deepseek error]", e);
+      console.error("[deepseek error]", e); // ラベルはそのまま維持
       // 後払い方式：ここでは消費しない
-      return res.status(e.status || 500).json({ error: "DeepSeek request failed", detail: e });
+      return res.status(e.status || 500).json({ error: "Gemini request failed", detail: e });
     }
 
     // 整形（★順序を安定化：normalize → 空行 → 落ち付与）
@@ -747,5 +828,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server Error", detail: e });
   }
 }
-
-
