@@ -343,6 +343,29 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     .filter(Boolean)
     .slice(0, 4);
 
+  // ★性格の自動付与（名前文字列に「（」が含まれていない場合のみ付与）
+  // 例: "田中, 佐藤" → "田中（論理的）, 佐藤（アホ）"
+  const hasPersonality = names.some(n => n.includes("(") || n.includes("（"));
+  let charDesc = names.join("、");
+  if (!hasPersonality && names.length >= 2) {
+    const personalities = [
+      ["論理的すぎて面倒くさい人", "感情的でアホな人"],
+      ["自信過剰な勘違い野郎", "冷めたリアリスト"],
+      ["言葉使いが丁寧すぎるサイコパス", "普通の常識人"],
+      ["滑舌が悪い熱血漢", "聞き取るのがうまい冷静な人"]
+    ];
+    // ランダムで1セット選ぶ
+    const [p1, p2] = personalities[Math.floor(Math.random() * personalities.length)];
+    // names配列自体は弄らず、プロンプトに渡す文字列だけ加工
+    if (names[0] && names[1]) {
+      charDesc = `${names[0]}（${p1}）、${names[1]}（${p2}）`;
+      // 3人目以降がいればそのまま結合
+      if (names.length > 2) {
+        charDesc += "、" + names.slice(2).join("、");
+      }
+    }
+  }
+
   const targetLen = Math.min(Number(length) || 350, 2000);
   
   // ★修正: 指定文字数を「下限」にする（ユーザーは指定量以上を期待するため）
@@ -376,13 +399,15 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     "",
     `■題材: ${safeTheme}`,
     `■ジャンル: ${safeGenre}`,
-    `■登場人物: ${names.join("、")}`,
-    `■目標文字数: ${minLen}〜${maxLen}文字（必ずこの範囲内に収める）`,
+    `■登場人物: ${charDesc}`,
+    `■目標文字数: ${minLen}文字以上 ${maxLen}文字以下（この範囲を絶対に守ること。短すぎる場合は失格）`,
     "",
     "■必須の構成",
     "- 1) フリ（導入）：ボケやオチを成立させるための「前提」「状況設定」「観客との共通認識づくり」を設定する。",
     "- 2) 伏線回収：フリ（導入）の段階で提示された情報・言葉・構図を、後半で再登場させて「意外な形で再接続」させる。",
     "- 3) 最後は明確な“オチ”：全てのズレ・やり取りを収束させる表現、言葉を使う。",
+    // ★追加要素2：ボケのインフレ
+    "- 4) 「ボケのエスカレーション」：同じテーマでボケを繰り返す際、必ず前回よりも「極端」で「ありえない」ボケに進化させること（徐々に異常性を高める）。",
     "",
     // ★ 強化：「採用する技法」を“必ず”使う（未使用は不可）
     "■必ず使用する技法（名称を本文に書かない）",
@@ -421,6 +446,12 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     "- 観客がしっかり笑える表現にする。",
     "- ボケやツッコミには、少しヒヤヒヤする要素や意外性があっても、暴力・差別・性的な危険さには踏み込まず、最終的に安心感や納得感のあるオチになるようにする。",
     "- フロントで選択された技法が、ボケとツッコミの自然な掛け合いの中で伝わるように使われているかを常に意識する。",
+    // ★追加要素1：具体性の強制
+    "- 【超重要】「固有名詞」や「具体的な数字」を必ず使うこと。「美味しい店」ではなく「サイゼリヤ」、「高い」ではなく「35年ローン」など、映像が浮かぶ具体的な言葉選びをすること。",
+    "- 抽象的な表現（あれ、それ、あること、面白いこと）は禁止。",
+    // ★追加要素3（性格）の反映
+    "- 各キャラクターは、設定された「性格」に基づいた口調・思考回路を徹底すること。",
+    "- 性格の不一致から生まれる「話の通じなさ」を笑いにすること。",
     "",
     // ▼▼▼ 最終チェックリスト ▼▼▼
     `■最終出力前に必ずこのチェックリストを頭の中で確認：`,
@@ -431,7 +462,7 @@ function buildPrompt({ theme, genre, characters, length, selected }) {
     `- フリ（導入）→ 伏線回収 → 最後は明確な「オチ」という全体の構成になっているか？`,
     `- 途中で展開破壊はあれど、全体として「一貫した話の漫才」となっているか？`,
     `- 表現により「緊張感」がある状態とそれが「緩和」する状態があるか？`,
-    `- 文字数は ${minLen}〜${maxLen} か？`,
+    `- 文字数は必ず ${minLen}文字以上 あるか？`,
     `- 各台詞は「名前: セリフ」形式か？`,
     `- 最後は ${tsukkomiName}: もういいよ！ の行で終わっており、この行が本文中で1回だけになっているか？`,
     `- タイトルと本文の間に空行があるか？`,
@@ -468,6 +499,12 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
     "- 最後は ${tsukkomiName}: もういいよ！ の行で終わっており、この行が本文中で1回だけになっているか？",
     "- タイトルと本文の間に空行があるか？",
     "- 現実的なネタにしているか？",
+    // ★追加要素1：具体性の強制
+    "- 【超重要】「固有名詞」や「具体的な数字」を必ず使うこと。「美味しい店」ではなく「サイゼリヤ」、「高い」ではなく「35年ローン」など、映像が浮かぶ具体的な言葉選びをすること。",
+    "- 抽象的な表現（あれ、それ、あること、面白いこと）は禁止。",
+    // ★追加要素3（性格）の反映
+    "- 各キャラクターは、設定された「性格」に基づいた口調・思考回路を徹底すること。",
+    "- 性格の不一致から生まれる「話の通じなさ」を笑いにすること。",
     "→ 1つでもNoなら、即座に修正してから出力。",
     "",
     "【これまでの本文】",
@@ -483,7 +520,7 @@ async function generateContinuation({ client, model, baseBody, remainingChars, t
   const resp = await client.chat.completions.create({
     model,
     messages,
-    temperature: 0.2,
+    temperature: 0.7,
     max_output_tokens: approxTok,
     max_tokens: approxTok,
   });
@@ -523,7 +560,7 @@ const client = {
 
         const model = payload.model || DEFAULT_MODEL;
         const messages = payload.messages || [];
-        const temperature = payload.temperature ?? 0.2;
+        const temperature = payload.temperature ?? 0.7;
         const maxOut = payload.max_output_tokens ?? payload.max_tokens;
 
         // OpenAI形式 messages → Gemini contents へ変換
@@ -617,11 +654,16 @@ async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [
     `- フリ（導入）→ 伏線回収 → 最後は明確な「オチ」という全体の構成になっているか？`,
     `- 途中で展開破壊はあれど、全体として「一貫した話の漫才」となっているか？`,
     `- 表現により「緊張感」がある状態とそれが「緩和」する状態があるか？`,
-    `- 文字数は ${minLen}〜${maxLen} か？`,
+    `- 文字数は必ず ${minLen}文字以上 あるか？（不足している場合は加筆修正して伸ばすこと）`, // ★文字数チェック強化
     `- 各台詞は「名前: セリフ」形式か？`,
     `- 最後は ${tsukkomiName}: もういいよ！ の行で終わっており、この行が本文中で1回だけになっているか？`,
     `- 現実的なネタにしているか？`,
     "- タイトルと本文の間に空行があるか？",
+    // ★追加要素4：笑いの質チェック
+    "- ボケの言葉選びは一般的すぎないか？（もっと具体的な単語に直せないか？）",
+    "- ツッコミは単なる「説明」になっていないか？（ボケの異常さを嘆く、呆れる、強く否定する等の「感情」が乗っているか？）",
+    "- 台本全体を通して、読み手が『フフッ』と笑えるポイントが3箇所以上あるか？",
+    
     // ★ ここから追記：禁止語句の厳格チェック
     "- 本文に『皮肉』『風刺』『緊張』『緩和』『伏線』『比喩』という語を**一切含めない**こと（英字・同義語例: irony, satire, tension, release, foreshadowing, metaphor も不可）。該当語がある場合は**別表現に必ず置換**してから出力すること。",
     "→ 1つでもNoなら、即座に本文を修正して満たしてから出力。",
@@ -652,7 +694,7 @@ async function selfVerifyAndCorrectBody({ client, model, body, requiredTechs = [
   const resp = await client.chat.completions.create({
     model,
     messages,
-    temperature: 0.2,
+    temperature: 0.7,
     max_output_tokens: approxTok,
     max_tokens: approxTok,
   });
@@ -736,7 +778,7 @@ export default async function handler(req, res) {
     const payload = {
       model: DEFAULT_MODEL,
       messages,
-      temperature: 0.2,
+      temperature: 0.7,
       max_output_tokens: approxMaxTok,
       max_tokens: approxMaxTok,
     };
