@@ -86,8 +86,6 @@ function formatScript(rawText, names) {
   }
 
   // 本文成形
-  // 1. join("\n\n") で結合して、Androidでも確実に1行空くようにする
-  // 2. replace(/\n{3,}/g, "\n\n") で、万が一3行以上の改行（2行以上の空き）があれば1行空きに正規化する
   let bodyText = lines.join("\n\n").replace(/\n{3,}/g, "\n\n");
 
   // 話者コロンの正規化
@@ -95,11 +93,11 @@ function formatScript(rawText, names) {
   
   const outro = `${names[1] || "B"}: もういいよ！`;
   
-  // ★修正2: 末尾に既に「もういいよ」がある場合は削除し、必ず1つだけ付与する
-  // 正規表現: 行頭or改行 + (名前:)? + もういいよ + (!や！)* + 文末
-  bodyText = bodyText.replace(/(?:^|\n)(?:[^\n:：]+[：:])?\s*もういいよ[！!]*\s*$/, "");
+  // ★修正箇所: 末尾に「もういいよ」が1つでも複数あっても、それら全てを削除する
+  // 末尾にある（改行や空白 ＋ 名前 ＋ もういいよ ＋ 記号）の繰り返しにマッチさせて空にする
+  bodyText = bodyText.replace(/(?:\s*(?:[^\n:：]+[：:])?\s*もういいよ[！!]*\s*)+$/, "");
   
-  // 最後に正規のオチを付与（結合時も \n\n (1行空き) にする）
+  // 最後に正規のオチを付与
   bodyText = bodyText.trim() + "\n\n" + outro;
 
   // 特殊文字排除
@@ -140,7 +138,7 @@ export default async function handler(req, res) {
     const techniquesText = [...selB, ...selT, ...selG].map(t => `・${t}`).join("\n") || "・比喩表現で例える\n・伏線を回収する";
 
     // 3. 初回プロンプト（文字数厳守を強調）
-    const initialPrompt = `プロの漫才作家として爆笑できる台本を日本語で作成してください。
+    const initialPrompt = `プロの漫才作家として、爆笑でき多くの人にわかりやすい台本を日本語で作成してください。
 題材: ${theme}
 ジャンル: ${genre}
 条件:
@@ -191,7 +189,6 @@ ${cleanBody}`;
         cleanBody = res2.cleanBody;
       } catch (e) {
         console.warn("Retry generation failed:", e);
-        // リトライ失敗時は初回生成分を返す（エラーにはしない）
       }
     }
 
