@@ -90,10 +90,6 @@ function formatScript(rawText, names) {
   // 2. replace(/\n{3,}/g, "\n\n") で、万が一3行以上の改行（2行以上の空き）があれば1行空きに正規化する
   let bodyText = lines.join("\n\n").replace(/\n{3,}/g, "\n\n");
 
-  // 話者コロンの正規化
-  bodyText = bodyText.replace(/(^|\n)([^\n:：]+)[：:]\s*/g, "$1$2: ");
-  
-  const outro = `${names[1] || "B"}: もういいよ！`;
   
   // ★修正2: 末尾に既に「もういいよ」がある場合は削除し、必ず1つだけ付与する
   // 正規表現: 行頭or改行 + (名前:)? + もういいよ + (!や！)* + 文末
